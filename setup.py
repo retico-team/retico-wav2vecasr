@@ -20,7 +20,7 @@ config = {
     "download_url": "??",
     "author_email": "caseykennington@boisestate.edu",
     "version": "0.1",
-    "install_requires": ["retico-core~=0.2.0", "torch~=1.11.0", "hugginfave~=0.6.0", "transformers" ],
+    "install_requires": ["retico-core~=0.2.0", "torch~=1.11.0", "hugginface~=0.6.0", "transformers", "webrtcvad", "colorama"],
     "packages": find_packages(),
     "name": "retico-wav2vecasr",
 }

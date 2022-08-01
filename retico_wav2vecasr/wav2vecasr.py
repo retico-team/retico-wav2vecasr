@@ -37,7 +37,7 @@ from colorama import Style
 # regular expression for filtering
 import re
 
-class OfflineASRModule(abstract.AbstractModule):
+class Wav2VecASR(abstract.AbstractModule):
     """A Module that recognizes speech locally by utilizing the Wav2Vec2-Base-960h base model from huggingface."""
 
     def __init__(self, test_mode=False, **kwargs):
@@ -99,11 +99,11 @@ class OfflineASRModule(abstract.AbstractModule):
 
     @staticmethod
     def name():
-        return "Offline ASR Module"
+        return "Wav2VecASR ASR Module"
 
     @staticmethod
     def description():
-        return "A Module that recognizes speech offline."
+        return "A Module that recognizes speech using Wav2Vec."
 
     @staticmethod
     def input_ius():
