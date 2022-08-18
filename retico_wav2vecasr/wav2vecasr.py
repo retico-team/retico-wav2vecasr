@@ -1,105 +1,114 @@
-import os
-import sys
-import numpy as np
+"""
+wav2vec ASR Module
+==================
+
+This module provides on-device ASR capabilities by using the wav2vec2 transformer
+provided by huggingface. In addition, the ASR module provides end-of-utterance detection
+(with a VAD), so that produced hypotheses are being "committed" once an utterance is
+finished.
+"""
+
 import threading
-from os import path
-from retico_core import abstract
-from retico_core.text import SpeechRecognitionIU
+from retico_core import *
 from retico_core.audio import AudioIU
-from retico_core.debug import DebugModule
+from retico_core.text import SpeechRecognitionIU
+from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
+import pydub
+import webrtcvad
+import numpy as np
 
-# word filtering
-from nltk.corpus import wordnet as wn
-from nltk.corpus import words
 
-#voice activity
-# import webrtcvad
+class Wav2Vec2ASR:
+    def __init__(
+        self,
+        wav2vec2_model="facebook/wav2vec2-base-960h",
+        framerate=16_000,
+        silence_dur=1,
+        vad_agressiveness=3,
+        silence_threshold=0.75,
+    ):
+        self.processor = Wav2Vec2Processor.from_pretrained(wav2vec2_model)
+        self.model = Wav2Vec2ForCTC.from_pretrained(wav2vec2_model)
+        self.audio_buffer = []
+        self.framerate = framerate
+        self.vad = webrtcvad.Vad(vad_agressiveness)
+        self.silence_dur = silence_dur
+        self.vad_state = False
+        self._n_sil_frames = None
+        self.silence_threshold = silence_threshold
 
-# For managing audio file
-import wave
-import pyaudio
-import librosa
-import time
+    def _resample_audio(self, audio):
+        if self.framerate != 16_000:
+            # If the framerate is not 16 kHz, we need to resample
+            s = pydub.AudioSegment(
+                audio, sample_width=2, channels=1, frame_rate=self.framerate
+            )
+            s = s.set_frame_rate(16_000)
+            return s._data
+        return audio
 
-#Importin Pytorch
-import torch
+    def get_n_sil_frames(self):
+        if not self._n_sil_frames:
+            if len(self.audio_buffer) == 0:
+                return None
+            frame_length = len(self.audio_buffer[0]) / 2
+            self._n_sil_frames = int(self.silence_dur / (frame_length / 16_000))
+        return self._n_sil_frames
 
-#Importing Wav2Vec
-from transformers import Wav2Vec2ForCTC, Wav2Vec2Tokenizer
+    def recognize_silence(self):
+        n_sil_frames = self.get_n_sil_frames()
+        if not n_sil_frames or len(self.audio_buffer) < n_sil_frames:
+            return True
+        silence_counter = 0
+        for a in self.audio_buffer[-n_sil_frames:]:
+            if not self.vad.is_speech(a, 16_000):
+                silence_counter += 1
+        if silence_counter >= int(self.silence_threshold * n_sil_frames):
+            return True
+        return False
 
-# handling errors
-import traceback
+    def add_audio(self, audio):
+        audio = self._resample_audio(audio)
+        self.audio_buffer.append(audio)
 
-# logger
-from colorama import Fore
-from colorama import Style
+    def recognize(self):
+        silence = self.recognize_silence()
 
-# regular expression for filtering
-import re
+        if not self.vad_state and not silence:
+            self.vad_state = True
+            self.audio_buffer = self.audio_buffer[-self.get_n_sil_frames() :]
 
-class Wav2VecASR(abstract.AbstractModule):
-    """A Module that recognizes speech locally by utilizing the Wav2Vec2-Base-960h base model from huggingface."""
+        if not self.vad_state:
+            return None, False
 
-    def __init__(self, test_mode=False, **kwargs):
-        """Initialize the ASR module with the given arguments.
-            roughly about 16 input_ius equals to 1 seconds
+        full_audio = b""
+        for a in self.audio_buffer:
+            full_audio += a
+        npa = np.frombuffer(full_audio, dtype=np.int16).astype(np.double)
+        if len(npa) < 10:
+            return None, False
+        input_values = self.processor(
+            npa, return_tensors="pt", sampling_rate=16000
+        ).input_values
+        logits = self.model(input_values).logits
+        predicted_ids = np.argmax(logits.detach().numpy(), axis=-1)
+        transcription = self.processor.batch_decode(predicted_ids)[0].lower()
 
-        Args:
-        """
-        self.predictions = []
-        self.test_mode = test_mode
-        self.sample_width = 2
-        self.pyaudio_instance = pyaudio.PyAudio()
-        self.format = self.pyaudio_instance.get_format_from_width(self.sample_width)
-        self.channels = 1
-        self.rate = 16000
-        self.wave_output_filename = os.getcwdb().decode("utf-8") + "\\output.wav"
-        if path.exists(self.wave_output_filename):
-            os.remove(self.wave_output_filename)
-        if self.test_mode:
-            self.frames = None
-        else:
-            self.frames = []
-        self.first = True
-        self.tokenizer = Wav2Vec2Tokenizer.from_pretrained("facebook/wav2vec2-base-960h")
-        self.model = Wav2Vec2ForCTC.from_pretrained("facebook/wav2vec2-base-960h")
+        if silence:
+            self.vad_state = False
+            self.audio_buffer = []
 
-        self.silence_start_time = time.time()
-        self.last_pred = ""
+        return transcription, self.vad_state
 
-        # voice activity variables
-        # self.frame_duration = 10  # 62
-        # self.vad = webrtcvad.Vad(2)
+    def reset(self):
+        self.vad_state = True
+        self.audio_buffer = []
 
-        # the boolean for the prediction function: whether it should predict or not
-        self.predict_thread_on = True
 
-        #optimization variables
-        self.wordCountAtm = 0  # tell you how many word count we have in the partial text prediction
-
-        # result
-        self.previousResult = ""  ## hold the previous prediction at every iteration
-        self.previousResultTime = time.time()  ## hold the previous prediction time at every iteration
-        self.result = ""  ## the predicted result so far
-        self.finalResult = "" ## the very final result when commit happens
-
-        # latency testing variables
-        self.sentence_prediction_total_time = 0  ## holds the total prediction latency time at certain iteration
-        self.sentence_prediction_total_time_final = 0 ## holds the total prediction final latency time
-        self.latestFile = ""
-
-        # TODAY
-        self.lastTranscription = ""
-        self.isFileSaved = False
-
-        # revoke count testing
-        self.revoke_count = 0
-
-        super().__init__(**kwargs)
-
+class Wav2VecASRModule(AbstractModule):
     @staticmethod
     def name():
-        return "Wav2VecASR ASR Module"
+        return "Wav2Vec ASR MOdule"
 
     @staticmethod
     def description():
@@ -113,425 +122,85 @@ class Wav2VecASR(abstract.AbstractModule):
     def output_iu():
         return SpeechRecognitionIU
 
-    def process_update(self, update):
-        # voice activity test
-        # frame = b'\x00\x00' * int(self.rate * self.frame_duration / 1000)
-        # frame = input_iu.raw_audio * int(self.rate * self.frame_duration / 1000)
-        # print('Contains speech: %s' % (self.vad.is_speech(frame, self.rate)))
-        # return None
-        ius = update.incremental_units()
-        for input_iu in ius:
-            if self.test_mode:
-                if self.frames is None:
-                    self.frames = input_iu.wavAudio
-                else:
-                    self.frames = np.concatenate((self.frames, input_iu.wavAudio), axis=0)
-                self.latestFile = input_iu.currentFileName
+    LANGUAGE_MAPPING = {
+        "en": "facebook/wav2vec2-base-960h",
+        "de": "oliverguhr/wav2vec2-large-xlsr-53-german-cv9",
+        "fr": "facebook/wav2vec2-large-xlsr-53-french",
+        "es": "facebook/wav2vec2-large-xlsr-53-spanish",
+    }
+
+    def __init__(self, language="en", framerate=None, silence_dur=1, **kwargs):
+        super().__init__(**kwargs)
+
+        if language not in self.LANGUAGE_MAPPING.keys():
+            print("Unknown ASR language. Defaulting to English (en).")
+            language = "en"
+
+        self.language = language
+        self.acr = Wav2Vec2ASR(
+            wav2vec2_model=self.LANGUAGE_MAPPING[language],
+            silence_dur=silence_dur,
+        )
+        self.framerate = framerate
+        self.silence_dur = silence_dur
+        self._asr_thread_active = False
+        self.latest_input_iu = None
+
+    def process_update(self, update_message):
+        for iu, ut in update_message:
+            # Audio IUs are only added and never updated.
+            if ut != UpdateType.ADD:
+                continue
+            if self.framerate is None:
+                self.framerate = iu.rate
+                self.acr.framerate = self.framerate
+            self.acr.add_audio(iu.raw_audio)
+            if not self.latest_input_iu:
+                self.latest_input_iu = iu
+
+    def _asr_thread(self):
+        while self._asr_thread_active:
+            prediction, vad = self.acr.recognize()
+            end_of_utterance = not vad and prediction is not None
+            if prediction is None:
+                continue
+            um, new_text = self.get_increment(prediction)
+
+            if new_text.strip() == "" and vad is True:
+                continue
+
+            output_iu = self.create_iu(self.latest_input_iu)
+
+            self.latest_input_iu = None
+            if end_of_utterance:
+                output_iu.set_asr_results([prediction], new_text, 0.0, 0.99, True)
+                output_iu.committed = True
+                self.current_ius = []
             else:
-                self.frames.append(input_iu.raw_audio)  # Only append the new audio and let the PredictSpeech take care of it
+                output_iu.set_asr_results([prediction], new_text, 1.0, 0.99, False)
+                self.current_ius.append(output_iu)
 
-            if len(self.frames) > 500000:
-                # TODAY
-                lengthToRemove = int(len(self.frames) * 0.30)  # upto 80% size is two words, roughly
-                self.frames = self.frames[lengthToRemove:]
-                # TODAY
+            um.add_iu(output_iu, UpdateType.ADD)
+            self.append(um)
 
-            return None
+    def get_increment(self, new_text):
+        """Compares the full text given by the asr with the IUs that are already
+        produced and returns only the increment from the last update. It revokes all
+        previously produced IUs that do not match."""
+        um = UpdateMessage()
+        for iu in self.current_ius:
+            if new_text.startswith(iu.text):
+                new_text = new_text[len(iu.text) :]
+            else:
+                iu.revoked = True
+                um.add_iu(iu, UpdateType.REVOKE)
+        self.current_ius = [iu for iu in self.current_ius if not iu.revoked]
+        return um, new_text
 
-    def setup(self):
-        t = threading.Thread(target=self.PredictSpeech)
-        t.start()
-        pass
+    def prepare_run(self):
+        self._asr_thread_active = True
+        threading.Thread(target=self._asr_thread).start()
 
     def shutdown(self):
-        self.predict_thread_on = False
-        pass
-
-    def findNewIUs(self, string1, string2):
-        list1 = string1.split(" ")
-        list2 = string2.split(" ")
-
-        result = []
-        # special case when list1 is bigger, meaning the prediction shrunk
-        if len(list1) > len(list2):
-            index = -1
-            for i in range(0, len(list2)):  # because list2 is the smaller one
-                if list1[i] != list2[i]:
-                    index = i
-                    break
-            if index == -1:  # everything matched until the extra part
-                for i in range(len(list2), len(list1)):
-                    if list1[i] != "":
-                        result.append("Revoke: " + list1[i])
-            else:
-                for i in range(index, len(list1)):
-                    if list1[i] != "":
-                        result.append("Revoke: " + list1[i])
-                for i in range(index, len(list2)):
-                    if list2[i] != "":
-                        result.append("Add: " + list2[i])
-            return result
-
-        index = -1
-        for i in range(0, len(list1)):
-            if list1[i] != list2[i]:
-                index = i
-                break
-
-        # first string is empty or fully match
-        if index == -1:
-            if string1 == "":
-                for i in range(0, len(list2)):
-                    if list2[i] != "":
-                        result.append("Add: " + list2[i])
-            else:
-                for i in range(len(list1), len(list2)):
-                    if list2[i] != "":
-                        result.append("Add: " + list2[i])
-        # all existing words revoked
-        elif index == 0:
-            for i in range(0, len(list1)):
-                if list1[i] != "":
-                    result.append("Revoke: " + list1[i])
-            for i in range(0, len(list2)):
-                if list2[i] != "":
-                    result.append("Add: " + list2[i])
-        else:
-            for i in range(index, len(list1)):
-                if list1[i] != "":
-                    result.append("Revoke: " + list1[i])
-            for i in range(index, len(list2)):
-                if list2[i] != "":
-                    result.append("Add: " + list2[i])
-
-        return result
-
-    def WordLookup(self, word):
-        """
-            This function looks for a word in the WordNet corpus
-
-            Parameters:
-                word (string): The word we are looking for
-            Returns:
-                boolean: true if word is valid and false otherwise
-                """
-        # TODO: WordNet and nltk corpus mistakes some common words (e.g. "YOU")
-        if len(word) == 1:
-            return self.OneLetterWord(word)
-        if word.lower() in words.words() or word.capitalize() in words.words(): ## if you use words corpus
-        #if len(wn.synsets(word)) > 0: ## if you use WordNet corpus
-            return True
-        return False
-
-    def OneLetterWord(self, word):
-        """
-            This function filters out the only two one letter words in English "A" and "I" since nltk mistakes about it
-
-            Parameters:
-                word (string): The word we are looking for
-            Returns:
-                boolean: true if word is a valid one letter word and false otherwise
-        """
-        if word.upper() == "A" or word.upper() == "I":
-            return True
-        return False
-
-    def NormalizeSpaces(self, string1, string2):
-        """
-            This function takes in two string and resolves how many spaces you need in between to properly add them.
-
-            Parameters:
-                string1 (string): The first string
-                string2 (string): The second string
-
-            Returns:
-                string: the properly concatenated string
-
-            Example:
-                    stringToLookFor: "I DO NOT KNOW YOU BUT I WILL FI"
-                    stringToLookIn: "ND YOU AND"
-
-                    returns: 'I DO NOT KNOW YOU BUT I WILL FIND YOU AND'
-
-        """
-        if string1.endswith(" ") or string2.startswith(" "):
-            return string1 + string2
-
-        string1Split = string1.split(" ")
-        string2Split = string2.split(" ")
-        wordToLook = string1Split[len(string1Split) - 1] + string2Split[0]
-        if self.WordLookup(wordToLook):
-            return string1 + string2
-        return string1 + " " + string2
-
-    def TrimPrediction(self, sentence):
-        """
-            This function takes in a string and trims the start and end depending on whether the start and end is valid English word
-
-            Parameters:
-                sentence (string): The string that contains the prediction
-
-            Returns:
-                string: trimmed string
-
-            Example:
-                sentence: "ddd I LIVE IN MAINE ddd"
-
-                returns: "I LIVE IN MAINE"
-
-        """
-        splitted = sentence.split(" ")
-
-        try:
-            if len(splitted) >= 1:
-                if not self.WordLookup(splitted[0]):
-                    sentence = sentence.split(' ', 1)[1]
-                if not self.WordLookup(splitted[len(splitted) - 1]):
-                    sentence = sentence.rsplit(' ', 1)[0]
-            return sentence
-        except IndexError:
-            return sentence
-
-    def TrimBeginningOfString(self, string):
-        """
-            This function takes in a string and trims the start depending on whether the start is valid English word
-
-            Parameters:
-                sentence (string): The string that contains the prediction
-
-            Returns:
-                string: trimmed string
-
-            Example:
-                sentence: "ddd I LIVE IN MAINE"
-
-            returns: "I LIVE IN MAINE"
-
-        """
-        try:
-            result = string
-            result = result.split(' ', 1)[1]
-        except IndexError:
-            result = ""
-        return result
-
-    def GetProperStringToAdd(self, stringToLookFor, stringToLookIn):
-        """
-            This function takes in two strings and returns the best substring of stringToLookIn to merge with stringToLookFor without loss of data.
-
-            Parameters:
-            stringToLookFor (string): The string that contains the prediction from the beginning
-            stringToLookIn (string): The string that contains the next partial prediction
-
-            Returns:
-            string: the part of the stringToLookIn that is not in stringToLookFor
-
-            Example:
-                stringToLookFor: "I DO NOT KNOW YOU BUT I WILL FI"
-                stringToLookIn: "I WILL FIND YOU AND"
-
-                returns: 'ND YOU AND'
-
-        """
-        copyOfStringToLookFor = stringToLookFor
-        while copyOfStringToLookFor != "":
-            if stringToLookIn.startswith(copyOfStringToLookFor):
-                lenToTrim = len(copyOfStringToLookFor)
-                stringToLookIn = stringToLookIn[lenToTrim:]
-                return stringToLookIn
-            elif self.TrimBeginningOfString(stringToLookIn).startswith(copyOfStringToLookFor):
-                lenToTrim = len(copyOfStringToLookFor)
-                stringToLookIn = self.TrimBeginningOfString(stringToLookIn)[lenToTrim:]
-                return stringToLookIn
-            copyOfStringToLookFor = copyOfStringToLookFor[1:]
-
-        return self.TrimPrediction(stringToLookIn)
-
-    def GetFileSaveStatus(self):
-        return self.isFileSaved
-    def PredictSpeech(self):  # inner function
-        # when we reach word three length, we know where to trim off and how much of info is permanent
-        wordThreeLength = 0
-        while self.predict_thread_on is True:
-            if self.first:
-                time.sleep(0.7)
-                print("START")
-                self.first = False
-            else:
-                time.sleep(0.07)
-            try:
-                # latency testing varialbe
-                process_start_time = time.time()
-
-                if self.test_mode:
-                    audio = self.frames
-                else:
-                    currentFrames = self.frames
-                    if path.exists(self.wave_output_filename):
-                        os.remove(self.wave_output_filename)
-                    wf = wave.open(self.wave_output_filename, 'wb')
-                    wf.setnchannels(self.channels)
-                    wf.setsampwidth(self.pyaudio_instance.get_sample_size(self.format))
-                    wf.setframerate(self.rate)
-                    wf.writeframes(b''.join(currentFrames))
-                    wf.close()
-                    audio, rate = librosa.load(self.wave_output_filename, sr=16000)
-                    # raw = b''.join(currentFrames)
-                    # raw = np.frombuffer(raw, dtype='int32')
-                    # audio = raw / 2147483648
-
-                someTime = time.time()
-                if len(audio) < 1:
-                    print("AUDIO IS NONE!")
-                    continue
-                if audio is None:
-                    print("AUDIO IS NONE")
-                    continue
-                input_values = self.tokenizer(audio, return_tensors="pt").input_values
-                logits = self.model(input_values).logits
-                prediction = torch.argmax(logits, dim=-1)
-                transcription = self.tokenizer.batch_decode(prediction)[0]
-                #print("before trim: " + str(transcription))
-                transcription = self.TrimPrediction(transcription)
-                transcription = re.sub('[.,!/;-@#$%^&*?]', '', transcription)
-                # print("transcription: " + str(transcription))
-                someTimeTwo = time.time()
-                # optimization
-                wordCount = len(transcription.split(" "))
-                self.wordCountAtm = wordCount  # self.wordCountAtm + wordCount
-
-                # this tells us the position where to cut off chunks, or how much of the sentence is permanent
-                if self.wordCountAtm >= 2 and wordThreeLength == 0:
-                    if not self.test_mode:
-                        wordThreeLength = int(len(currentFrames) / wordCount * 2)  # len(currentFrames) # the 2 says the size upto second word
-
-                if self.lastTranscription != transcription:
-                    self.previousResultTime = time.time()
-                    self.lastTranscription = transcription
-
-                # reached 5 word limit, means we can cut of upto two word length
-                if self.wordCountAtm >= 5:
-                    if self.test_mode:
-                        lengthToRemove = int(len(self.frames) * 0.35) # upto 40% size is two words, roughly
-                        self.frames = self.frames[lengthToRemove:]
-                    else:
-                        self.frames = self.frames[wordThreeLength:]
-                    wordThreeLength = 0
-                    self.previousResult = self.result
-                    # TODAY self.previousResultTime = time.time()
-                    currentResult = self.result
-                    self.result = self.NormalizeSpaces(self.result, self.GetProperStringToAdd(self.result, transcription))
-                    generatedIUs = self.findNewIUs(currentResult, self.result)
-                    for iu in generatedIUs:
-                        if iu.startswith("Revoke"):
-                            self.revoke_count = self.revoke_count + 1
-                            print(Fore.RED + str(iu) + Style.RESET_ALL)
-                        else:
-                            print(Fore.CYAN + str(iu) + Style.RESET_ALL)
-
-                    # end time for latency test
-                    self.sentence_prediction_total_time = self.sentence_prediction_total_time + (time.time() - process_start_time)
-
-                if len(transcription.split(" ")) == len(self.last_pred.split(" ")):     # word level
-                    if self.last_pred != transcription:     # sentence level
-                        self.last_pred = transcription
-                        self.silence_start_time = time.time()
-
-                elif len(transcription.split(" ")) > len(self.last_pred.split(" ")):
-                    self.last_pred = transcription
-                    self.silence_start_time = time.time()
-                else:
-                    self.last_pred = transcription
-                    self.silence_start_time = time.time()
-
-                currentTime = time.time()
-                # print("OUTSIDE currentTime - self.silence_start_time: " + str(currentTime - self.silence_start_time))
-                # print("OUTSIDE currentTime - self.previousResultTime: " + str(currentTime - self.previousResultTime))
-                # silence limit 0.8 seconds taking acount the processing delay to make it a second, previousResultTime indicates that although there is no silence, no new info came up
-                if currentTime - self.silence_start_time >= 0.8 or currentTime - self.previousResultTime >=2.0:
-
-                    self.silence_start_time = time.time()
-                    if path.exists(self.wave_output_filename):
-                        os.remove(self.wave_output_filename)
-                    if self.test_mode:
-                        self.frames = None
-                    else:
-                        self.frames = []
-                    self.finalResult = self.result + self.GetProperStringToAdd(self.result, self.last_pred)
-                    generatedIUs = self.findNewIUs(self.result, self.finalResult)
-                    for iu in generatedIUs:
-                        if iu.startswith("Revoke"):
-                            self.revoke_count = self.revoke_count + 1
-                            print(Fore.RED + str(iu) + Style.RESET_ALL)
-                        else:
-                            print(Fore.CYAN + str(iu) + Style.RESET_ALL)
-                    self.result = ""
-                    self.previousResult = ""
-                    self.previousResultTime = time.time()
-                    # TODAY
-                    self.lastTranscription = ""
-                    # TODAY
-                    self.last_pred = ""
-                    self.sentence_prediction_total_time_final = self.sentence_prediction_total_time
-                    self.sentence_prediction_total_time = 0
-
-                if self.result == "" and self.finalResult != "":
-                    if self.test_mode:
-                        # TODAY print("revoke count: " + str(self.revoke_count) + ", " + "total count: " + str(len(self.finalResult.split(" "))))
-                        print(Fore.RED + "saving data" + Style.RESET_ALL)
-                        # latency
-                        if not path.exists("localAsrLatency.txt"):
-                            file = open("localAsrLatency.txt", "w+")
-                            file.write(str(self.sentence_prediction_total_time_final/len(self.finalResult.split(" "))) + "\n")
-                            file.close()
-                        else:
-                            with open("localAsrLatency.txt", "a") as file:
-                                file.write(str(self.sentence_prediction_total_time_final/len(self.finalResult.split(" "))) + "\n")
-                                file.close()
-                        # prediction
-                        if not path.exists("localAsrPrediction.txt"):
-                            file = open("localAsrPrediction.txt", "w+")
-                            file.write(str(self.latestFile) + ", " + str(self.finalResult) + "\n")
-                            #print(Fore.CYAN + "TODAY: file name: " + self.latestFile + Style.RESET_ALL)
-                            #print(Fore.CYAN + "TODAY: pred: " + self.finalResult + Style.RESET_ALL)
-                            file.close()
-                            self.isFileSaved = True
-                        else:
-                            with open("localAsrPrediction.txt", "a") as file:
-                                file.write(str(self.latestFile) + ", " + str(self.finalResult) + "\n")
-                                #print(Fore.CYAN + "TODAY: file name: " + self.latestFile + Style.RESET_ALL)
-                                #print(Fore.CYAN + "TODAY: pred: " + self.finalResult + Style.RESET_ALL)
-                                file.close()
-                                self.isFileSaved = True
-                        # revoke percentage
-                        totalIUs = len(self.finalResult.split(" ")) + self.revoke_count
-                        revoke_percentage = self.revoke_count/totalIUs
-                        self.revoke_count = 0
-                        print("revoke_percentagef: " + str(revoke_percentage))
-
-                        if not path.exists("localAsrRevoke.txt"):
-                            file = open("localAsrRevoke.txt", "w+")
-                            file.write(str(revoke_percentage) + "\n")
-                            file.close()
-                        else:
-                            with open("localAsrRevoke.txt", "a") as file:
-                                file.write(str(revoke_percentage) + "\n")
-                                file.close()
-                        print(Fore.RED + "SAVED" + Style.RESET_ALL)
-                    print(Fore.GREEN + "Commit: " + str(self.finalResult) + Style.RESET_ALL)
-                    avgTime = self.sentence_prediction_total_time_final / len(self.finalResult.split(" "))
-                    predition_iu = SpeechRecognitionIU(DebugModule)
-                    update_iu = abstract.UpdateMessage()
-                    self.predictions.append(self.finalResult)
-                    predition_iu.set_asr_results(self.predictions, self.finalResult, 70.0, 70.0, True)
-                    update_iu = abstract.UpdateMessage.from_iu(predition_iu, abstract.UpdateType.ADD)
-                    self.append(update_iu)
-                    print("Average prediction time per word: " + str(avgTime) + "s")
-                    #print(Fore.BLUE + "file name: " + str(self.latestFile) + Style.RESET_ALL)
-                    self.finalResult = ""
-                    self.sentence_prediction_total_time_final = 0
-                # else:
-                    # print(Fore.GREEN + "prediction: " + str(self.result) + Style.RESET_ALL)
-            except:
-                print("Exceptions happened")
-                traceback.print_exc()
+        self._asr_thread_active = False
+        self.acr.reset()
