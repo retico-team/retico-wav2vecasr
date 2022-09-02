@@ -9,7 +9,7 @@ finished.
 """
 
 import threading
-from retico_core import *
+import retico_core
 from retico_core.audio import AudioIU
 from retico_core.text import SpeechRecognitionIU
 from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
@@ -110,7 +110,7 @@ class Wav2Vec2ASR:
         self.audio_buffer = []
 
 
-class Wav2VecASRModule(AbstractModule):
+class Wav2VecASRModule(retico_core.AbstractModule):
     @staticmethod
     def name():
         return "Wav2Vec ASR Module"
@@ -154,7 +154,7 @@ class Wav2VecASRModule(AbstractModule):
     def process_update(self, update_message):
         for iu, ut in update_message:
             # Audio IUs are only added and never updated.
-            if ut != UpdateType.ADD:
+            if ut != retico_core.UpdateType.ADD:
                 continue
             if self.framerate is None:
                 self.framerate = iu.rate
@@ -180,7 +180,7 @@ class Wav2VecASRModule(AbstractModule):
                     output_iu.set_asr_results([prediction], "", 1.0, 0.99, True)
                     output_iu.committed = True
                     self.current_ius = []
-                    um.add_iu(output_iu, UpdateType.ADD)
+                    um.add_iu(output_iu, retico_core.UpdateType.ADD)
 
             for i, token in enumerate(new_tokens):
                 output_iu = self.create_iu(self.latest_input_iu)
@@ -191,7 +191,7 @@ class Wav2VecASRModule(AbstractModule):
                     self.current_ius = []
                 else:
                     self.current_ius.append(output_iu)
-                um.add_iu(output_iu, UpdateType.ADD)
+                um.add_iu(output_iu, retico_core.UpdateType.ADD)
 
             self.latest_input_iu = None
             self.append(um)
@@ -200,7 +200,7 @@ class Wav2VecASRModule(AbstractModule):
         """Compares the full text given by the asr with the IUs that are already
         produced and returns only the increment from the last update. It revokes all
         previously produced IUs that do not match."""
-        um = UpdateMessage()
+        um = retico_core.UpdateMessage()
         tokens = new_text.strip().split(" ")
         if tokens == [""]:
             return um, []
@@ -219,7 +219,7 @@ class Wav2VecASRModule(AbstractModule):
                     token_idx += 1
                 else:
                     current_iu.revoked = True
-                    um.add_iu(current_iu, UpdateType.REVOKE)
+                    um.add_iu(current_iu, retico_core.UpdateType.REVOKE)
         self.current_ius = [iu for iu in self.current_ius if not iu.revoked]
 
         return um, new_tokens
