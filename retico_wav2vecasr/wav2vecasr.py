@@ -17,6 +17,7 @@ import transformers
 import pydub
 import webrtcvad
 import numpy as np
+import time
 
 transformers.logging.set_verbosity_error()
 
@@ -112,11 +113,11 @@ class Wav2Vec2ASR:
 class Wav2VecASRModule(AbstractModule):
     @staticmethod
     def name():
-        return "Wav2Vec ASR MOdule"
+        return "Wav2Vec ASR Module"
 
     @staticmethod
     def description():
-        return "A Module that recognizes speech using Wav2Vec."
+        return "A module that recognizes speech using Wav2Vec."
 
     @staticmethod
     def input_ius():
@@ -164,6 +165,7 @@ class Wav2VecASRModule(AbstractModule):
 
     def _asr_thread(self):
         while self._asr_thread_active:
+            time.sleep(0.5)
             prediction, vad = self.acr.recognize()
             end_of_utterance = not vad and prediction is not None
             if prediction is None:
