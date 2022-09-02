@@ -37,6 +37,7 @@ config = {
         "webrtcvad~=2.0",
         "pydub~=0.25",
         "numpy~=1.23",
+        "torch~=1.12",
     ],
     "packages": find_packages(),
     "name": "retico-wav2vecasr",
