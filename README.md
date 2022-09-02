@@ -1,6 +1,20 @@
 # retico-wav2vecasr
 Local wav2vec ASR Module for ReTiCo
 
+### Installations and requirements
+
+you can install the module via pip:
+
+```bash
+$ pip install retico-wav2vecasr
+```
+
+In order to access the ASR models, one of PyTorch, TensorFlow, or Flax need to
+be installed. For example, PyTorch can be installed via pip with:
+
+```bash
+$ pip install torch
+```
 
 ### Example
 
