@@ -166,6 +166,8 @@ class Wav2VecASRModule(retico_core.AbstractModule):
     def _asr_thread(self):
         while self._asr_thread_active:
             time.sleep(0.5)
+            if not self.framerate:
+                continue
             prediction, vad = self.acr.recognize()
             end_of_utterance = not vad and prediction is not None
             if prediction is None:
