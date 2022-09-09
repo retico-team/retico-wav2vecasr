@@ -169,62 +169,29 @@ class Wav2VecASRModule(retico_core.AbstractModule):
             if not self.framerate:
                 continue
             prediction, vad = self.acr.recognize()
-            end_of_utterance = not vad and prediction is not None
             if prediction is None:
                 continue
-            um, new_tokens = self.get_increment(prediction)
+            end_of_utterance = not vad
+            um, new_tokens = retico_core.text.get_text_increment(self, prediction)
 
-            if len(new_tokens) == 0:
-                if vad:
-                    continue
-                else:
-                    output_iu = self.create_iu(self.latest_input_iu)
-                    output_iu.set_asr_results([prediction], "", 1.0, 0.99, True)
-                    output_iu.committed = True
-                    self.current_ius = []
-                    um.add_iu(output_iu, retico_core.UpdateType.ADD)
+            if len(new_tokens) == 0 and vad:
+                continue
 
             for i, token in enumerate(new_tokens):
                 output_iu = self.create_iu(self.latest_input_iu)
                 eou = i == len(new_tokens) - 1 and end_of_utterance
                 output_iu.set_asr_results([prediction], token, 0.0, 0.99, eou)
-                if eou:
-                    output_iu.committed = True
-                    self.current_ius = []
-                else:
-                    self.current_ius.append(output_iu)
+                self.current_output.append(output_iu)
                 um.add_iu(output_iu, retico_core.UpdateType.ADD)
+
+            if end_of_utterance:
+                for iu in self.current_output:
+                    self.commit(iu)
+                    um.add_iu(iu, retico_core.UpdateType.COMMIT)
+                self.current_output = []
 
             self.latest_input_iu = None
             self.append(um)
-
-    def get_increment(self, new_text):
-        """Compares the full text given by the asr with the IUs that are already
-        produced and returns only the increment from the last update. It revokes all
-        previously produced IUs that do not match."""
-        um = retico_core.UpdateMessage()
-        tokens = new_text.strip().split(" ")
-        if tokens == [""]:
-            return um, []
-
-        new_tokens = []
-        iu_idx = 0
-        token_idx = 0
-        while token_idx < len(tokens):
-            if iu_idx >= len(self.current_ius):
-                new_tokens.append(tokens[token_idx])
-                token_idx += 1
-            else:
-                current_iu = self.current_ius[iu_idx]
-                iu_idx += 1
-                if tokens[token_idx] == current_iu.text:
-                    token_idx += 1
-                else:
-                    current_iu.revoked = True
-                    um.add_iu(current_iu, retico_core.UpdateType.REVOKE)
-        self.current_ius = [iu for iu in self.current_ius if not iu.revoked]
-
-        return um, new_tokens
 
     def prepare_run(self):
         self._asr_thread_active = True
