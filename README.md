@@ -1,5 +1,5 @@
 # retico-wav2vecasr
-Local wav2vec ASR Module for ReTiCo
+Local wav2vec see citation below for modle information) ASR Module for ReTiCo.
 
 ### Installations and requirements
 
@@ -60,4 +60,27 @@ print("Running the ASR. Press enter to exit")
 input()
 
 retico_core.network.stop(asr)
+```
+
+
+Citation
+
+```
+@misc{https://doi.org/10.48550/arxiv.2006.11477,
+  doi = {10.48550/ARXIV.2006.11477},
+  
+  url = {https://arxiv.org/abs/2006.11477},
+  
+  author = {Baevski, Alexei and Zhou, Henry and Mohamed, Abdelrahman and Auli, Michael},
+  
+  keywords = {Computation and Language (cs.CL), Machine Learning (cs.LG), Sound (cs.SD), Audio and Speech Processing (eess.AS), FOS: Computer and information sciences, FOS: Computer and information sciences, FOS: Electrical engineering, electronic engineering, information engineering, FOS: Electrical engineering, electronic engineering, information engineering},
+  
+  title = {wav2vec 2.0: A Framework for Self-Supervised Learning of Speech Representations},
+  
+  publisher = {arXiv},
+  
+  year = {2020},
+  
+  copyright = {arXiv.org perpetual, non-exclusive license}
+}
 ```
