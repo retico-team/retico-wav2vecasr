@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=80", "setuptools-scm[simple]>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "retico-wav2vecasr"
+dynamic = ["version"]
+dependencies = [
+    "retico-core>=2.0.0",
+    "transformers",
+    "webrtcvad~=2.0",
+    "pydub~=0.25",
+    "numpy",
+    "torch",
+]
+authors = [
+    {name = "Tahsin Mir Imtiaz", email= "caseykennington@boisestate.edu"},
+    {name = "Ryan Whetten"},
+    {name = "Casey Kennington"},
+    {name = "Thilo Michael"},
+]
+description = "The Huggingface wav2vec ASR incremental modules for the retico framework"
+readme = "README.md"
+license = { file = "LICENSE" }
+keywords = [
+    "retico",
+    "framework",
+    "incremental",
+    "dialogue",
+    "dialog",
+    "asr",
+    "speech"
+]
+classifiers = [
+        "Development Status :: 2 - Pre-Alpha",
+        "Programming Language :: Python :: 3",
+        "License :: OSI Approved :: Apache Software License",
+    ]

@@ -1,22 +1,28 @@
 # retico-wav2vecasr
-Local wav2vec see citation below for modle information) ASR Module for ReTiCo.
 
-### Installations and requirements
+A ReTico module for automatic speech recognition (ASR) using Meta's Wav2Vec Model. The module processes audio from microphone, converts speech into text using the model's pretrained transformer, and finally outputs transcriptions using ReTico's framework. 
 
-you can install the module via pip:
+## Installation
 
-```bash
-$ pip install retico-wav2vecasr
-```
+To use the Automatic Speech Recognition module based on Wav2Vec, you first need to install the package.
 
-In order to access the ASR models, one of PyTorch, TensorFlow, or Flax need to
-be installed. For example, PyTorch can be installed via pip with:
+* Install the package ```pip install git+ git+https://github.com/retico-team/retico-wav2vecasr```
 
-```bash
-$ pip install torch
-```
+Dependencies including PyTorch will be installed automatically. However, depending on your system (CPU/GPU), you may need to install the correct PyTorch build manually from https://pytorch.org.
 
-### Example
+## Module
+
+### `Wav2VecASRModule`
+This module performs ASR using a pretrained Wav2Vec2 model from Hugging Face. It processes the audio incrementally and produces audio transcriptions. The module also uses internal setting for speech detections and create end-of-speech.
+
+**Model options:** `en`(English), `de`(German), `fr`(French), `es`(Spanish)
+
+#### Arguments:
+* `language` (str): Language to be used, current languages are limited to 'en', 'de', 'fr', 'es'
+* `framerate` (int): Sample rate, defaults to audio IU
+* `silence_dur` (float): Time before it identifies end-of-speech, defaults to 1 second
+
+## Example
 
 ```python
 import retico_core
@@ -63,7 +69,7 @@ retico_core.network.stop(asr)
 ```
 
 
-Citation
+## Citation
 
 ```
 @misc{https://doi.org/10.48550/arxiv.2006.11477,
