@@ -4,7 +4,11 @@ A ReTico module for automatic speech recognition (ASR) using Meta's Wav2Vec Mode
 
 ## Installation
 
-To use the Automatic Speech Recognition module based on Wav2Vec, you first need to install the package.
+To use the Automatic Speech Recognition module based on Wav2Vec, you first need to install the retico-core package:
+
+* Install the package ```pip install git+ git+https://github.com/retico-team/retico-core```
+
+Right after that, install the wav2vecasr package:
 
 * Install the package ```pip install git+ git+https://github.com/retico-team/retico-wav2vecasr```
 
